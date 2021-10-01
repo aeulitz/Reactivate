@@ -1,0 +1,11 @@
+namespace ReactivateComponent
+{
+    [default_interface]
+    runtimeclass Calc
+    {
+        Calc();
+
+        Int32 Add(Int32 a, Int32 b);
+        Int32 Mul(Int32 a, Int32 b);
+    }
+}
