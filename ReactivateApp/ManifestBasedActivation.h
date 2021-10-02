@@ -5,44 +5,39 @@
 #include <VersionHelpers.h>
 #include <xmllite.h>
 
-#define WIN1019H1_BLDNUM 18362
+#include <functional>
+#include <map>
 
-// REVIEW: move into ManifestBasedActivation class?
-VERSIONHELPERAPI IsWindowsVersionOrGreaterEx(WORD wMajorVersion, WORD wMinorVersion, WORD wServicePackMajor, WORD wBuildNumber)
-{
-	OSVERSIONINFOEXW osvi = { sizeof(osvi) };
-	DWORDLONG const dwlConditionMask =
-		VerSetConditionMask(
-			VerSetConditionMask(
-				VerSetConditionMask(
-					VerSetConditionMask(
-						0, VER_MAJORVERSION, VER_GREATER_EQUAL),
-					VER_MINORVERSION, VER_GREATER_EQUAL),
-				VER_SERVICEPACKMAJOR, VER_GREATER_EQUAL),
-			VER_BUILDNUMBER, VER_GREATER_EQUAL);
-
-	osvi.dwMajorVersion = wMajorVersion;
-	osvi.dwMinorVersion = wMinorVersion;
-	osvi.wServicePackMajor = wServicePackMajor;
-	osvi.dwBuildNumber = wBuildNumber;
-
-	return VerifyVersionInfoW(&osvi, VER_MAJORVERSION | VER_MINORVERSION | VER_SERVICEPACKMAJOR | VER_BUILDNUMBER, dwlConditionMask) != FALSE;
-}
-
-// REVIEW: move into ManifestBasedActivation class?
-inline bool IsWindows1019H1OrGreater()
-{
-	return IsWindowsVersionOrGreaterEx(HIBYTE(_WIN32_WINNT_WIN10), LOBYTE(_WIN32_WINNT_WIN10), 0, WIN1019H1_BLDNUM);
-}
-
+// This is what the repo is meant to demonstrate. This class is intended to serve
+// the following purposes:
+// 1. It is a container for the code needed to redirect WinRT component activation
+//    to control it via data in the executable's app manifest. In that capacity,
+//    it serves the same purpose as undocked reg-free WinRT.
+// 2. Unlike undocked reg-free WinRT which effects redirection of component activation
+//    at app boot, this class is meant to enable redirection on demand.
+// 3. Instances of this class are meant to be lightweight tokens to control the
+//    lifetime of the redirection. This is meant to facilitate solutions where several
+//    "entry points" require redirection.
 class ManifestBasedActivation
 {
-public:
-	static std::pair<HRESULT, ManifestBasedActivation> Initialize() noexcept;
-	~ManifestBasedActivation() noexcept;
-
 private:
 	ManifestBasedActivation() noexcept;
+
+public:
+	ManifestBasedActivation(const ManifestBasedActivation&) = delete;
+	ManifestBasedActivation(ManifestBasedActivation&&) noexcept;
+	ManifestBasedActivation& operator=(const ManifestBasedActivation&) = delete;
+	ManifestBasedActivation& operator=(ManifestBasedActivation&&) = delete;
+
+	~ManifestBasedActivation() noexcept;
+
+	static std::pair<HRESULT, ManifestBasedActivation> Initialize() noexcept;
+
+private:
+
+#ifdef TESTBUILD
+	friend class ManifestBasedActivationTests;
+#endif
 
 	// REVIEW: If by the time we get this working we don't need any info other than the module name,
 	// get rid of this struct.
@@ -52,6 +47,10 @@ private:
 	};
 
 	using CatalogType = std::unordered_map<std::wstring /* activation ID */, ComponentInfo>;
+
+	static std::function<bool()> IsManifestBasedActivationRequired;
+
+	static HRESULT Uninitialize() noexcept;
 
 	static HRESULT LoadCatalog() noexcept;
 
@@ -65,14 +64,13 @@ private:
 	static HRESULT DetouredRoActivateInstance(HSTRING activatableClassId, ::IInspectable** instance) noexcept;
 	static HRESULT DetouredRoGetActivationFactory(HSTRING activatableClassId, REFIID iid, void** factory) noexcept;
 
+	bool m_active;
 	static int g_refCount;
-	static std::optional<bool> g_osSupportsManifestBasedActivation;
-
-
+	static std::unique_ptr<CatalogType> g_catalog;
 	static bool g_detoursActive;
 	static decltype(RoActivateInstance)* g_originalRoActivateInstance;
 	static decltype(RoGetActivationFactory)* g_originalRoGetActivationFactory;
-
-	static std::unique_ptr<CatalogType> g_catalog;
 };
 
+// ensure ManifestBasedActivation instances can be easily passed around
+static_assert(sizeof(ManifestBasedActivation) <= sizeof(bool));

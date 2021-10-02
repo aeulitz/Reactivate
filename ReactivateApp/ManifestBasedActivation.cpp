@@ -8,22 +8,52 @@
 #include <shlwapi.h>
 #include <winstring.h>
 
-
-std::unique_ptr<ManifestBasedActivation::CatalogType> ManifestBasedActivation::g_catalog;
-
 typedef HRESULT(__stdcall* ActivationFactoryGetter)(HSTRING, IActivationFactory**);
 
-bool ManifestBasedActivation::g_detoursActive = false;
-decltype(RoActivateInstance)* ManifestBasedActivation::g_originalRoActivateInstance = RoActivateInstance;
-decltype(RoGetActivationFactory)* ManifestBasedActivation::g_originalRoGetActivationFactory = RoGetActivationFactory;
+constexpr int WIN1019H1_BLDNUM = 18362;
 
-int ManifestBasedActivation::g_refCount = 0;
+inline bool IsWindowsVersionOrGreaterEx(WORD wMajorVersion, WORD wMinorVersion, WORD wServicePackMajor, WORD wBuildNumber)
+{
+	OSVERSIONINFOEXW osvi = { sizeof(osvi) };
+	DWORDLONG const dwlConditionMask =
+		VerSetConditionMask(
+			VerSetConditionMask(
+				VerSetConditionMask(
+					VerSetConditionMask(
+						0, VER_MAJORVERSION, VER_GREATER_EQUAL),
+					VER_MINORVERSION, VER_GREATER_EQUAL),
+				VER_SERVICEPACKMAJOR, VER_GREATER_EQUAL),
+			VER_BUILDNUMBER, VER_GREATER_EQUAL);
 
-std::optional<bool> ManifestBasedActivation::g_osSupportsManifestBasedActivation;
+	osvi.dwMajorVersion = wMajorVersion;
+	osvi.dwMinorVersion = wMinorVersion;
+	osvi.wServicePackMajor = wServicePackMajor;
+	osvi.dwBuildNumber = wBuildNumber;
+
+	return VerifyVersionInfoW(&osvi, VER_MAJORVERSION | VER_MINORVERSION | VER_SERVICEPACKMAJOR | VER_BUILDNUMBER, dwlConditionMask) != FALSE;
+}
+
+inline bool IsWindows1019H1OrGreater()
+{
+	return IsWindowsVersionOrGreaterEx(HIBYTE(_WIN32_WINNT_WIN10), LOBYTE(_WIN32_WINNT_WIN10), 0, WIN1019H1_BLDNUM);
+}
 
 ManifestBasedActivation::ManifestBasedActivation() noexcept
+	: m_active{ true }
 {
+	++g_refCount;
+}
 
+ManifestBasedActivation::ManifestBasedActivation(ManifestBasedActivation&& other) noexcept
+	: m_active{ other.m_active }
+{
+	other.m_active = false;
+}
+
+ManifestBasedActivation::~ManifestBasedActivation() noexcept
+{
+	if (m_active) --g_refCount;
+	Uninitialize();
 }
 
 std::pair<HRESULT, ManifestBasedActivation> ManifestBasedActivation::Initialize() noexcept
@@ -33,58 +63,48 @@ std::pair<HRESULT, ManifestBasedActivation> ManifestBasedActivation::Initialize(
 	HRESULT hr = S_OK;
 	ManifestBasedActivation activation{};
 
-	if (!g_osSupportsManifestBasedActivation.has_value())
-	{
-		// g_osSupportsManifestBasedActivation = IsWindows1019H1OrGreater();
-
-		// for test purposes
-		g_osSupportsManifestBasedActivation = false;
-	}
-
-	if (g_osSupportsManifestBasedActivation.value())
+	if (!IsManifestBasedActivationRequired())
 	{
 		// nothing to do
-		return std::make_pair(S_OK, activation);
+		return std::make_pair(S_OK, std::move(activation));
 	}
 
-	if (g_refCount++ > 0)
+	if (g_refCount > 1)
 	{
 		// other scopes are already active
-		return std::make_pair(S_OK, activation);
+		return std::make_pair(S_OK, std::move(activation));
 	}
 
 	if (FAILED(hr = LoadCatalog()))
 	{
-		return std::make_pair(hr, activation);
+		return std::make_pair(hr, std::move(activation));
 	}
 
 	if (FAILED(hr = InitializeDetours()))
 	{
-		return std::make_pair(hr, activation);
+		return std::make_pair(hr, std::move(activation));
 	}
 
-	return std::make_pair(S_OK, activation);
+	return std::make_pair(S_OK, std::move(activation));
 }
 
-ManifestBasedActivation::~ManifestBasedActivation() noexcept
+HRESULT ManifestBasedActivation::Uninitialize() noexcept
 {
-	assert(g_osSupportsManifestBasedActivation.has_value());
-
-	if (g_osSupportsManifestBasedActivation.value())
+	if (!IsManifestBasedActivationRequired())
 	{
 		// nothing to do
-		return;
+		return S_OK;
 	}
 
-	assert(g_refCount > 0);
-
-	if (--g_refCount > 0)
+	if (g_refCount > 0)
 	{
-		// other scopes still active 
-		return;
+		// other scopes still active
+		return S_OK;
 	}
 
-	UninitializeDetours();
+	// REVIEW: We could call FreeLibrary here and destroy g_catalog.
+
+	return UninitializeDetours();
 }
 
 HRESULT ManifestBasedActivation::LoadCatalog() noexcept
@@ -260,37 +280,6 @@ HRESULT ManifestBasedActivation::UninitializeDetours() noexcept
 
 HRESULT ManifestBasedActivation::DetouredRoActivateInstance(HSTRING activatableClassId, IInspectable** instance) noexcept
 {
-	/*
-	auto it = g_catalog->find(WindowsGetStringRawBuffer(activatableClassId, nullptr));
-	if (it == g_catalog->cend())
-	{
-		// no manifest mapping for component, fall back to original RoActivateInstance
-		return g_originalRoActivateInstance(activatableClassId, instance);
-	}
-
-	// We assume that LoadLibraryEx caches.
-	HMODULE moduleHandle = LoadLibraryExW(it->second.ModuleName.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
-	if (moduleHandle == nullptr)
-	{
-		return HRESULT_FROM_WIN32(GetLastError());
-	}
-
-	// REVIEW: Do we need to organize calls to FreeLibrary(moduleHandle)?
-
-	ActivationFactoryGetter activationFactoryGetter = (ActivationFactoryGetter)GetProcAddress(moduleHandle, "DllGetActivationFactory");
-	if (activationFactoryGetter == nullptr)
-	{
-		return HRESULT_FROM_WIN32(GetLastError());
-	}
-
-	wil::com_ptr<IActivationFactory> activationFactory;
-	RETURN_IF_FAILED(activationFactoryGetter(activatableClassId, activationFactory.addressof()));
-
-	return activationFactory->ActivateInstance(instance);
-
-	*/
-
-
 	wil::com_ptr<IActivationFactory> activationFactory;
 	RETURN_IF_FAILED(DetouredRoGetActivationFactory(activatableClassId, __uuidof(IActivationFactory), reinterpret_cast<void**>(activationFactory.addressof())));
 	return activationFactory->ActivateInstance(instance);
@@ -336,3 +325,25 @@ HRESULT ManifestBasedActivation::DetouredRoGetActivationFactory(HSTRING activata
 		return activationFactory->QueryInterface(iid, factory);
 	}
 }
+
+std::function<bool()> ManifestBasedActivation::IsManifestBasedActivationRequired = []()
+{
+	static std::optional<bool> g_isManifestBasedActivationRequired;
+
+	if (!g_isManifestBasedActivationRequired.has_value())
+	{
+		g_isManifestBasedActivationRequired = IsWindows1019H1OrGreater();
+	}
+
+	return g_isManifestBasedActivationRequired.value();
+};
+
+std::unique_ptr<ManifestBasedActivation::CatalogType> ManifestBasedActivation::g_catalog;
+
+bool ManifestBasedActivation::g_detoursActive = false;
+decltype(RoActivateInstance)* ManifestBasedActivation::g_originalRoActivateInstance = RoActivateInstance;
+decltype(RoGetActivationFactory)* ManifestBasedActivation::g_originalRoGetActivationFactory = RoGetActivationFactory;
+
+int ManifestBasedActivation::g_refCount = 0;
+
+
