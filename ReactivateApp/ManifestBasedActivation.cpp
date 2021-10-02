@@ -1,6 +1,6 @@
 #include "pch.h"
 
-#include "RNActivation.h"
+#include "ManifestBasedActivation.h"
 
 #include <wil/com.h>
 #include <detours.h>

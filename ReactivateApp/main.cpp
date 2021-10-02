@@ -1,6 +1,6 @@
 ﻿#include "pch.h"
 
-#include "RNActivation.h"
+#include "ManifestBasedActivation.h"
 #include <winrt/ReactivateComponent.h>
 
 #include <winstring.h>

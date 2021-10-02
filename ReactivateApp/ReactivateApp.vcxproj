@@ -109,14 +109,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
-    <ClInclude Include="RNActivation.h" />
+    <ClInclude Include="ManifestBasedActivation.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader>Create</PrecompiledHeader>
     </ClCompile>
-    <ClCompile Include="RNActivation.cpp" />
+    <ClCompile Include="ManifestBasedActivation.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
