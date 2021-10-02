@@ -6,8 +6,6 @@
 #include <xmllite.h>
 
 #define WIN1019H1_BLDNUM 18362
-namespace RNActivation
-{
 
 // REVIEW: move into ManifestBasedActivation class?
 VERSIONHELPERAPI IsWindowsVersionOrGreaterEx(WORD wMajorVersion, WORD wMinorVersion, WORD wServicePackMajor, WORD wBuildNumber)
@@ -40,10 +38,11 @@ inline bool IsWindows1019H1OrGreater()
 class ManifestBasedActivation
 {
 public:
-	ManifestBasedActivation() noexcept;
+	static std::pair<HRESULT, ManifestBasedActivation> Initialize() noexcept;
 	~ManifestBasedActivation() noexcept;
 
 private:
+	ManifestBasedActivation() noexcept;
 
 	// REVIEW: If by the time we get this working we don't need any info other than the module name,
 	// get rid of this struct.
@@ -60,18 +59,20 @@ private:
 	static HRESULT ParseFileElement(IXmlReader& reader) noexcept;
 	static HRESULT ParseActivatableClassElement(IXmlReader& reader, const wchar_t** name) noexcept;
 
-	static void InitializeDetours() noexcept;
-	static void UninitializeDetours() noexcept;
+	static HRESULT InitializeDetours() noexcept;
+	static HRESULT UninitializeDetours() noexcept;
 
 	static HRESULT DetouredRoActivateInstance(HSTRING activatableClassId, ::IInspectable** instance) noexcept;
 	static HRESULT DetouredRoGetActivationFactory(HSTRING activatableClassId, REFIID iid, void** factory) noexcept;
 
 	static int g_refCount;
 	static std::optional<bool> g_osSupportsManifestBasedActivation;
+
+
+	static bool g_detoursActive;
 	static decltype(RoActivateInstance)* g_originalRoActivateInstance;
 	static decltype(RoGetActivationFactory)* g_originalRoGetActivationFactory;
 
 	static std::unique_ptr<CatalogType> g_catalog;
 };
 
-}

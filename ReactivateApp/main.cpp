@@ -18,7 +18,7 @@ int main()
 	printf("Hello, %ls!\n", uri.AbsoluteUri().c_str());
 
 
-	RNActivation::ManifestBasedActivation activation;
+	auto [hr, activation] = ManifestBasedActivation::Initialize();
 
 	//HSTRING_HEADER hstringHeader;
 	//HSTRING activationId;
